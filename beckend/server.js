@@ -1,5 +1,6 @@
 // Load environment variables
 require("dotenv").config();
+require("./src/config/redis");
 
 const express = require("express");
 const mongoose = require("mongoose");
