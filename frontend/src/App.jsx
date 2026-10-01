@@ -5,6 +5,7 @@ import Login from "./pages/Login";
 import Signup from "./pages/Signup";
 import EventDetails from "./pages/EventDetails";
 import OrganizerDashboard from "./pages/OrganizerDashboard";
+import TicketDashboard from "./pages/TicketDashboard";
 
 function App() {
   return (
@@ -17,6 +18,7 @@ function App() {
             <Route path="/login" element={<Login />} />
             <Route path="/signup" element={<Signup />} />
             <Route path="/events/:id" element={<EventDetails />} />
+            <Route path="/my-tickets" element={<TicketDashboard />} />
 
             {/* You'd typically protect this route, checking for organizer role */}
             <Route path="/dashboard" element={<OrganizerDashboard />} />
