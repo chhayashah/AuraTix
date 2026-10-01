@@ -100,7 +100,9 @@ const EventDetails = () => {
 
             if (verifyResponse.data.success) {
               alert("🎉 Ticket Booked Successfully!");
-              navigate("/"); // Ya fir /dashboard par bhej dein
+              navigate("/my-tickets", {
+                state: { token: generatedToken, eventName: event.title },
+              }); // Ya fir /dashboard par bhej dein
             }
           } catch (error) {
             alert("Payment failed verification at backend.");
