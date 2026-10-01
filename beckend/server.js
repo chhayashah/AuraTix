@@ -1,42 +1,58 @@
-// Load environment variables
 require("dotenv").config();
-require("./src/config/redis");
-
 const express = require("express");
-const mongoose = require("mongoose");
 const cors = require("cors");
+const mongoose = require("mongoose");
+const http = require("http");
+const { Server } = require("socket.io");
 
-// Import routes & worker
-const apiRoutes = require("./src/routes/api.routes");
+// Import configurations and workers
+require("./src/config/redis");
+require("./src/workers/seatReclaim");
+
+// Initialize app
 const app = express();
 
-// Middlewares
-app.use(cors()); // Frontend (React) ko connect hone dega
-app.use(express.json()); // JSON payload parse karega
+// Middleware
+app.use(cors());
+app.use(express.json());
 
-// const paymentRoutes = require("./routes/payment.routes");
-// app.use("/api/payments", paymentRoutes);
+// 👇 Aapke actual folder structure ke hisaab se routes 👇
+const apiRoutes = require("./src/routes/api.routes");
+const paymentRoutes = require("./src/routes/payment.routes");
 
-// Base Route
-app.use("/api/v1", apiRoutes);
+// HTTP Server banayein Socket.io ke liye
+const server = http.createServer(app);
 
-// 404 Route handler
-app.use((req, res) => {
-  res.status(404).json({ success: false, message: "Route not found" });
+// Socket.io setup
+const io = new Server(server, {
+  cors: {
+    origin: "http://localhost:5173",
+    methods: ["GET", "POST"],
+  },
 });
 
-// Database Connection & Server Start
-const PORT = process.env.PORT || 5000;
+// Socket connection listener
+io.on("connection", (socket) => {
+  console.log(`🔌 A user connected (Socket ID: ${socket.id})`);
 
+  socket.on("disconnect", () => {
+    console.log(`User disconnected (Socket ID: ${socket.id})`);
+  });
+});
+
+app.set("io", io);
+
+// API Routes ko use karein
+app.use("/api/v1", apiRoutes);
+app.use("/api/payments", paymentRoutes);
+
+// MongoDB Connection
 mongoose
   .connect(process.env.MONGO_URI)
-  .then(() => {
-    console.log("✅ MongoDB Connected Successfully");
-    app.listen(PORT, () => {
-      console.log(`🚀 Server running on port ${PORT}`);
-    });
-  })
-  .catch((err) => {
-    console.error("❌ Database Connection Failed:", err.message);
-    process.exit(1);
-  });
+  .then(() => console.log("✅ MongoDB Connected"))
+  .catch((err) => console.error("MongoDB Connection Error:", err));
+
+const PORT = process.env.PORT || 5000;
+server.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});

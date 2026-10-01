@@ -1,227 +1,248 @@
-import { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import api from "../services/api";
-
-const loadRazorpayScript = () => {
-  return new Promise((resolve) => {
-    const script = document.createElement("script");
-    script.src = "https://checkout.razorpay.com/v1/checkout.js";
-    script.onload = () => resolve(true);
-    script.onerror = () => resolve(false);
-    document.body.appendChild(script);
-  });
-};
+import axios from "axios";
+import io from "socket.io-client";
 
 const EventDetails = () => {
   const { id } = useParams();
   const navigate = useNavigate();
   const [event, setEvent] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-
+  const [selectedTier, setSelectedTier] = useState("");
   const [quantity, setQuantity] = useState(1);
-  const [bookingStatus, setBookingStatus] = useState("");
-  const [lockMessage, setLockMessage] = useState("");
+  const [loading, setLoading] = useState(true);
 
-  // Naya state: Backend se aayi booking ID save karne ke liye
-  const [lockedBookingId, setLockedBookingId] = useState(null);
-
+  // 1. Event Data Fetch Karein
   useEffect(() => {
-    const fetchEventDetails = async () => {
+    const fetchEvent = async () => {
       try {
-        const response = await api.get("/events");
-        const foundEvent = response.data.data.find((e) => e._id === id);
-        if (foundEvent) setEvent(foundEvent);
-        else setError("Event not found");
-      } catch (err) {
-        setError("Failed to load event details");
-      } finally {
+        const res = await axios.get(
+          `http://localhost:5000/api/v1/events/${id}`,
+        );
+        setEvent(res.data.event);
+        if (res.data.event.ticketTiers.length > 0) {
+          setSelectedTier(res.data.event.ticketTiers[0]._id);
+        }
+        setLoading(false);
+      } catch (error) {
+        console.error("Error fetching event details", error);
         setLoading(false);
       }
     };
-    fetchEventDetails();
+    fetchEvent();
   }, [id]);
 
-  const handleLockTickets = async () => {
-    if (!localStorage.getItem("token")) {
-      alert("Please login to book tickets!");
-      return navigate("/login");
-    }
+  // 2. 🔴 SOCKET.IO: Real-Time Seat Updates Sunein
+  useEffect(() => {
+    const socket = io("http://localhost:5000");
 
-    setBookingStatus("locking");
-    try {
-      const response = await api.post("/bookings/lock", {
-        eventId: event._id,
-        ticketTierId: event.ticketTiers[0]._id,
-        quantity: quantity,
-      });
+    socket.on("seatUpdate", (data) => {
+      if (id === data.eventId) {
+        setEvent((prevEvent) => {
+          if (!prevEvent) return prevEvent;
+          const updatedTiers = prevEvent.ticketTiers.map((tier) =>
+            tier._id === data.ticketTierId
+              ? { ...tier, availableTickets: data.availableTickets }
+              : tier,
+          );
+          return { ...prevEvent, ticketTiers: updatedTiers };
+        });
+      }
+    });
 
-      // Booking ID save kar rahe hain taaki payment verification mein use ho sake
-      setLockedBookingId(response.data.booking._id);
-      setBookingStatus("locked");
-      setLockMessage(`✅ ${quantity} Ticket(s) locked! Proceed to payment.`);
-    } catch (err) {
-      setBookingStatus("error");
-      setLockMessage(
-        `❌ ${err.response?.data?.message || "Failed to lock tickets"}`,
-      );
-    }
+    return () => {
+      socket.disconnect(); // Component close hone par disconnect
+    };
+  }, [id]);
+
+  // 3. Razorpay Script Load Function
+  const loadRazorpayScript = () => {
+    return new Promise((resolve) => {
+      const script = document.createElement("script");
+      script.src = "https://checkout.razorpay.com/v1/checkout.js";
+      script.onload = () => resolve(true);
+      script.onerror = () => resolve(false);
+      document.body.appendChild(script);
+    });
   };
 
-  const handlePayment = async () => {
-    const res = await loadRazorpayScript();
-    if (!res) return alert("Razorpay SDK failed to load.");
+  // 4. Handle Lock & Book Process
+  const handleBooking = async () => {
+    const token = localStorage.getItem("token");
+    if (!token) {
+      alert("Please login to book tickets!");
+      navigate("/login");
+      return;
+    }
 
     try {
-      // 1. Backend se Secure Order ID generate karwayein
-      const orderResponse = await api.post("/payments/create-order", {
-        amount: event.ticketTiers[0].price * quantity,
-        bookingId: lockedBookingId,
-      });
-      const { order } = orderResponse.data;
+      // Step A: Lock Tickets in Backend
+      const lockRes = await axios.post(
+        "http://localhost:5000/api/v1/bookings/lock",
+        { eventId: id, ticketTierId: selectedTier, quantity },
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
 
-      // 2. Razorpay Popup setup karein
+      const bookingData = lockRes.data.booking;
+
+      // Step B: Load Razorpay
+      const isLoaded = await loadRazorpayScript();
+      if (!isLoaded) {
+        alert(
+          "Failed to load Razorpay. Please check your internet connection.",
+        );
+        return;
+      }
+
+      // Calculate Amount based on selected tier
+      const tierDetails = event.ticketTiers.find((t) => t._id === selectedTier);
+      const totalAmount = tierDetails.price * quantity;
+
+      // Step C: Create Razorpay Order
+      const orderRes = await axios.post(
+        "http://localhost:5000/api/payments/create-order",
+        { amount: totalAmount },
+        { headers: { Authorization: `Bearer ${token}` } },
+      );
+
+      // Step D: Open Razorpay Checkout Window
       const options = {
-        key: "rzp_test_TgHi7s3Hcu2sgG", // YAHAN APNI NAYI KEY ID DAALEIN
-        amount: order.amount,
-        currency: order.currency,
-        name: "UtsavBox",
-        description: `Ticket for ${event.title}`,
-        order_id: order.id, // Backend se aayi secure ID
+        key: "YOUR_RAZORPAY_KEY_ID_HERE", // Ise apne Razorpay Key ID se replace karein
+        amount: orderRes.data.order.amount,
+        currency: orderRes.data.order.currency,
+        name: "AuraTix",
+        description: `Booking for ${event.title}`,
+        order_id: orderRes.data.order.id,
         handler: async function (response) {
           try {
-            // 3. Payment ke baad Backend se Signature Verify karwayein
-            const verifyResponse = await api.post("/payments/verify", {
-              razorpay_order_id: response.razorpay_order_id,
-              razorpay_payment_id: response.razorpay_payment_id,
-              razorpay_signature: response.razorpay_signature,
-              bookingId: lockedBookingId,
-            });
+            // Step E: Verify Payment
+            const verifyRes = await axios.post(
+              "http://localhost:5000/api/payments/verify",
+              {
+                razorpay_order_id: response.razorpay_order_id,
+                razorpay_payment_id: response.razorpay_payment_id,
+                razorpay_signature: response.razorpay_signature,
+                bookingId: bookingData._id,
+              },
+              { headers: { Authorization: `Bearer ${token}` } },
+            );
 
-            if (verifyResponse.data.success) {
+            if (verifyRes.data.success) {
               alert("🎉 Ticket Booked Successfully!");
               navigate("/my-tickets", {
-                state: { token: generatedToken, eventName: event.title },
-              }); // Ya fir /dashboard par bhej dein
+                state: {
+                  token: verifyRes.data.ticketToken,
+                  eventName: event.title,
+                },
+              });
             }
           } catch (error) {
-            alert("Payment failed verification at backend.");
+            alert(
+              error.response?.data?.message || "Payment verification failed!",
+            );
           }
-        },
-        prefill: {
-          name: "Chhaya Shah",
-          email: "chhaya@example.com",
-          contact: "9999999999",
         },
         theme: { color: "#2563EB" },
       };
 
-      const paymentObject = new window.Razorpay(options);
-      paymentObject.open();
+      const rzp = new window.Razorpay(options);
+      rzp.open();
     } catch (error) {
-      console.error(error);
-      alert("Could not initialize payment. Check console.");
+      alert(error.response?.data?.message || "Error locking tickets");
     }
   };
 
   if (loading)
     return (
-      <div className="text-center mt-20 text-xl font-semibold">Loading...</div>
+      <div className="text-center mt-20 text-xl font-bold">
+        Loading Event...
+      </div>
     );
-  if (error)
+  if (!event)
     return (
-      <div className="text-center mt-20 text-red-500 font-bold">{error}</div>
+      <div className="text-center mt-20 text-xl font-bold">Event Not Found</div>
     );
+
+  const currentTierInfo = event.ticketTiers.find((t) => t._id === selectedTier);
 
   return (
     <div className="container mx-auto px-4 py-8 max-w-4xl">
-      <div className="bg-white rounded-lg shadow-lg overflow-hidden">
-        <div className="h-64 bg-gradient-to-r from-purple-600 to-pink-600 flex items-center justify-center">
-          <h1 className="text-4xl font-extrabold text-white text-center px-4">
-            {event.title}
-          </h1>
+      <h1 className="text-4xl font-extrabold text-gray-900 mb-6">
+        {event.title}
+      </h1>
+
+      <div className="bg-white rounded-xl shadow-lg p-6 border border-gray-200">
+        <h2 className="text-2xl font-bold mb-4 border-b pb-2">
+          Book Your Tickets
+        </h2>
+
+        {/* Ticket Type Selection */}
+        <div className="mb-4">
+          <label className="block text-gray-700 font-semibold mb-2">
+            Select Category
+          </label>
+          <select
+            className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500"
+            value={selectedTier}
+            onChange={(e) => setSelectedTier(e.target.value)}
+          >
+            {event.ticketTiers.map((tier) => (
+              <option key={tier._id} value={tier._id}>
+                {tier.name} - ₹{tier.price}
+              </option>
+            ))}
+          </select>
         </div>
 
-        <div className="p-8">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-            <div>
-              <h2 className="text-2xl font-bold text-gray-800 mb-4">
-                Event Details
-              </h2>
-              <div className="space-y-3 text-gray-600">
-                <p>
-                  <strong>📍 Venue:</strong> {event.location?.address},{" "}
-                  {event.location?.city}
-                </p>
-                <p>
-                  <strong>🎭 Category:</strong> {event.category}
-                </p>
-              </div>
-            </div>
-
-            <div className="bg-gray-50 p-6 rounded-lg border border-gray-200">
-              <h3 className="text-xl font-bold text-gray-800 mb-4">
-                Book Your Tickets
-              </h3>
-
-              <div className="flex justify-between items-center mb-4 pb-4 border-b border-gray-200">
-                <span className="text-gray-700 font-semibold">
-                  {event.ticketTiers[0]?.tierName || "General Entry"}
-                </span>
-                <span className="text-2xl font-bold text-blue-600">
-                  ₹{event.ticketTiers[0]?.price}
-                </span>
-              </div>
-
-              <div className="mb-6">
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Select Quantity
-                </label>
-                <select
-                  value={quantity}
-                  onChange={(e) => setQuantity(Number(e.target.value))}
-                  disabled={
-                    bookingStatus === "locked" || bookingStatus === "locking"
-                  }
-                  className="w-full px-4 py-2 border border-gray-300 rounded outline-none"
-                >
-                  {[1, 2, 3, 4, 5].map((num) => (
-                    <option key={num} value={num}>
-                      {num} Ticket(s)
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {lockMessage && (
-                <div
-                  className={`p-3 rounded mb-4 text-sm font-semibold ${bookingStatus === "error" ? "bg-red-100 text-red-700" : "bg-green-100 text-green-700"}`}
-                >
-                  {lockMessage}
-                </div>
-              )}
-
-              {bookingStatus !== "locked" ? (
-                <button
-                  onClick={handleLockTickets}
-                  disabled={bookingStatus === "locking"}
-                  className={`w-full py-3 rounded text-white font-bold transition ${bookingStatus === "locking" ? "bg-blue-400" : "bg-blue-600 hover:bg-blue-700"}`}
-                >
-                  {bookingStatus === "locking"
-                    ? "Locking Tickets..."
-                    : "Lock & Book Now"}
-                </button>
-              ) : (
-                <button
-                  onClick={handlePayment}
-                  className="w-full py-3 rounded text-white font-bold bg-green-600 hover:bg-green-700 transition shadow-lg animate-pulse"
-                >
-                  Pay ₹{event.ticketTiers[0]?.price * quantity} with Razorpay
-                </button>
-              )}
-            </div>
+        {/* Live Seat Count Display */}
+        {currentTierInfo && (
+          <div className="mb-6 bg-blue-50 text-blue-800 p-4 rounded-lg font-medium flex justify-between items-center">
+            <span>Price: ₹{currentTierInfo.price}</span>
+            <span
+              className={`px-3 py-1 rounded-full text-sm font-bold ${currentTierInfo.availableTickets < 10 ? "bg-red-100 text-red-600" : "bg-green-100 text-green-700"}`}
+            >
+              🟢 {currentTierInfo.availableTickets} Seats Left (Live)
+            </span>
           </div>
+        )}
+
+        {/* Quantity Selection */}
+        <div className="mb-6">
+          <label className="block text-gray-700 font-semibold mb-2">
+            Quantity
+          </label>
+          <select
+            className="w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500"
+            value={quantity}
+            onChange={(e) => setQuantity(Number(e.target.value))}
+            disabled={
+              !currentTierInfo || currentTierInfo.availableTickets === 0
+            }
+          >
+            {[1, 2, 3, 4, 5].map((num) => (
+              <option key={num} value={num}>
+                {num} Ticket(s)
+              </option>
+            ))}
+          </select>
         </div>
+
+        {/* Action Button */}
+        <button
+          onClick={handleBooking}
+          disabled={
+            !currentTierInfo || currentTierInfo.availableTickets < quantity
+          }
+          className={`w-full py-4 rounded-xl text-lg font-bold text-white transition-all shadow-md
+            ${
+              !currentTierInfo || currentTierInfo.availableTickets < quantity
+                ? "bg-gray-400 cursor-not-allowed"
+                : "bg-blue-600 hover:bg-blue-700 hover:shadow-lg"
+            }`}
+        >
+          {!currentTierInfo || currentTierInfo.availableTickets === 0
+            ? "Sold Out"
+            : `Lock & Pay ₹${currentTierInfo ? currentTierInfo.price * quantity : 0}`}
+        </button>
       </div>
     </div>
   );
