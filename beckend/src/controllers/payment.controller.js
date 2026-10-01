@@ -1,5 +1,6 @@
 const Razorpay = require("razorpay");
 const crypto = require("crypto");
+const jwt = require("jsonwebtoken");
 const Booking = require("../models/Booking");
 
 exports.createOrder = async (req, res) => {
@@ -46,6 +47,12 @@ exports.verifyPayment = async (req, res) => {
         status: "confirmed",
         paymentId: razorpay_payment_id,
       });
+
+      const ticketToken = jwt.sign(
+        { bookingId: bookingId, paymentId: razorpay_payment_id },
+        process.env.QR_SECRET_KEY,
+      );
+
       res
         .status(200)
         .json({ success: true, message: "Payment verified successfully" });
